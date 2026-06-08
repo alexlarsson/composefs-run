@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Format check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  build-and-unit-tests:
+    name: Build + unit tests
+    runs-on: ubuntu-24.04
+    container:
+      image: quay.io/fedora/fedora:latest
+    steps:
+      - run: dnf -y install cargo clippy gcc-c++ fuse3-devel
+      - uses: actions/checkout@v4
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Unit tests
+        run: cargo test --bin cfsrun
+
+  integration-rootless:
+    name: Integration tests (rootless)
+    runs-on: ubuntu-24.04
+    container:
+      image: quay.io/fedora/fedora:latest
+      options: "--user 1000 --tmpfs /var/tmp:rw,exec"
+    steps:
+      - run: |
+          dnf -y install cargo gcc-c++ fuse3-devel crun skopeo pasta jq
+      - uses: actions/checkout@v4
+      - name: Build composefs-rs (cfsctl)
+        run: |
+          git clone --depth=1 https://github.com/containers/composefs-rs /tmp/composefs-rs
+          cargo build --manifest-path /tmp/composefs-rs/Cargo.toml -p composefs-ctl
+      - name: Build cfsrun
+        run: cargo build
+      - name: Run rootless integration tests
+        run: |
+          export CFSCTL=/tmp/composefs-rs/target/debug/cfsctl
+          cargo test --test integration
+
+  integration-rootful:
+    name: Integration tests (rootful)
+    runs-on: ubuntu-24.04
+    container:
+      image: quay.io/fedora/fedora:latest
+      options: "--privileged --tmpfs /var/tmp:rw,exec"
+    steps:
+      - run: dnf -y install cargo gcc-c++ fuse3-devel crun skopeo pasta jq
+      - uses: actions/checkout@v4
+      - name: Build composefs-rs (cfsctl)
+        run: |
+          git clone --depth=1 https://github.com/containers/composefs-rs /tmp/composefs-rs
+          cargo build --manifest-path /tmp/composefs-rs/Cargo.toml -p composefs-ctl
+      - name: Build cfsrun
+        run: cargo build
+      - name: Run rootful integration tests
+        run: |
+          export CFSCTL=/tmp/composefs-rs/target/debug/cfsctl
+          cargo test --test integration
