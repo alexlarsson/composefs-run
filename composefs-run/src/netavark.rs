@@ -221,36 +221,50 @@ pub fn setup(netns_path: &Path, container_id: &str, publish: &[super::PortSpec])
     fs::create_dir_all(config_dir).ok();
 
     let netavark = find_netavark()?;
-    let output = Command::new(&netavark)
-        .arg("--config")
-        .arg(config_dir)
-        .arg("setup")
-        .arg(netns_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(options_json.as_bytes())?;
-            child.wait_with_output()
-        })
-        .context("Running netavark setup")?;
 
-    if !output.status.success() {
-        release_ip(&ip);
-        anyhow::bail!(
-            "netavark setup failed: {} {}",
+    // Netavark has a TOCTOU race when creating the bridge: two concurrent
+    // calls can both see ENODEV on get_link, then one fails with EEXIST
+    // on create_link. Retry in that case — the bridge exists on retry.
+    let mut last_err = String::new();
+    for _ in 0..3 {
+        let output = Command::new(&netavark)
+            .arg("--config")
+            .arg(config_dir)
+            .arg("setup")
+            .arg(netns_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(options_json.as_bytes())?;
+                child.wait_with_output()
+            })
+            .context("Running netavark setup")?;
+
+        if output.status.success() {
+            return Ok(ip);
+        }
+
+        last_err = format!(
+            "{}{}",
             String::from_utf8_lossy(&output.stderr),
             String::from_utf8_lossy(&output.stdout)
         );
+
+        if !last_err.contains("File exists") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    Ok(ip)
+    release_ip(&ip);
+    anyhow::bail!("netavark setup failed: {last_err}")
 }
 
 /// Run netavark teardown for the given network namespace.
