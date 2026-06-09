@@ -27,56 +27,50 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  build-and-unit-tests:
-    name: Build + unit tests
+  build:
+    name: Build + clippy + unit tests
     runs-on: ubuntu-24.04
     container:
       image: quay.io/fedora/fedora:latest
     steps:
-      - run: dnf -y install cargo clippy gcc-c++ fuse3-devel
+      - run: dnf -y install cargo clippy gcc-c++ fuse3-devel openssl-devel git
       - uses: actions/checkout@v4
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Unit tests
         run: cargo test --bin cfsrun
-
-  integration-rootless:
-    name: Integration tests (rootless)
-    runs-on: ubuntu-24.04
-    container:
-      image: quay.io/fedora/fedora:latest
-      options: "--user 1000 --tmpfs /var/tmp:rw,exec"
-    steps:
-      - run: |
-          dnf -y install cargo gcc-c++ fuse3-devel crun skopeo pasta jq
-      - uses: actions/checkout@v4
-      - name: Build composefs-rs (cfsctl)
+      - name: Build cfsrun
+        run: cargo build
+      - name: Build cfsctl
         run: |
           git clone --depth=1 https://github.com/containers/composefs-rs /tmp/composefs-rs
           cargo build --manifest-path /tmp/composefs-rs/Cargo.toml -p composefs-ctl
-      - name: Build cfsrun
-        run: cargo build
-      - name: Run rootless integration tests
+      - name: Collect binaries
         run: |
-          export CFSCTL=/tmp/composefs-rs/target/debug/cfsctl
-          cargo test --test integration
+          mkdir -p /tmp/binaries
+          cp target/debug/cfsrun /tmp/binaries/
+          cp /tmp/composefs-rs/target/debug/cfsctl /tmp/binaries/
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: /tmp/binaries/
 
   integration-rootful:
     name: Integration tests (rootful)
+    needs: build
     runs-on: ubuntu-24.04
     container:
       image: quay.io/fedora/fedora:latest
       options: "--privileged --tmpfs /var/tmp:rw,exec"
     steps:
-      - run: dnf -y install cargo gcc-c++ fuse3-devel crun skopeo pasta jq
+      - run: dnf -y install cargo gcc-c++ fuse3-devel openssl-devel crun skopeo pasta netavark
       - uses: actions/checkout@v4
-      - name: Build composefs-rs (cfsctl)
-        run: |
-          git clone --depth=1 https://github.com/containers/composefs-rs /tmp/composefs-rs
-          cargo build --manifest-path /tmp/composefs-rs/Cargo.toml -p composefs-ctl
-      - name: Build cfsrun
-        run: cargo build
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: /usr/local/bin
+      - run: chmod +x /usr/local/bin/cfsrun /usr/local/bin/cfsctl
       - name: Run rootful integration tests
-        run: |
-          export CFSCTL=/tmp/composefs-rs/target/debug/cfsctl
-          cargo test --test integration
+        run: cargo test --test integration
