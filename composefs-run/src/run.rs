@@ -29,6 +29,7 @@ pub fn run(
     container_id: &str,
     container_dir: &Path,
     overlay_dir: &Path,
+    repo_path: &Path,
     image: &ResolvedImage,
 ) -> Result<()> {
     if rootless {
@@ -60,7 +61,7 @@ pub fn run(
         mount_rootfs_from_path(rootfs, &rootfs_dir, overlay_dir, cli.read_only, rootless)?;
     } else if rootless {
         mount_rootfs_with_fuse(
-            &cli.repo,
+            repo_path,
             image,
             &rootfs_dir,
             container_dir,
@@ -68,7 +69,7 @@ pub fn run(
             cli.read_only,
         )?;
     } else {
-        mount_rootfs_with_erofs(&cli.repo, image, &rootfs_dir, overlay_dir, cli.read_only)?;
+        mount_rootfs_with_erofs(repo_path, image, &rootfs_dir, overlay_dir, cli.read_only)?;
     }
 
     // ── Networking ──────────────────────────────────────────────────────

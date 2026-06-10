@@ -284,9 +284,10 @@ impl std::str::FromStr for UserSpec {
 #[derive(Debug, Parser)]
 #[clap(name = "cfsrun")]
 pub(crate) struct Cli {
-    /// Path to the composefs repository
-    #[clap(long, default_value = "/sysroot/composefs")]
-    repo: PathBuf,
+    /// Path to the composefs repository (default: /sysroot/composefs for root,
+    /// ~/.var/lib/composefs for rootless)
+    #[clap(long)]
+    repo: Option<PathBuf>,
 
     /// Mount the rootfs read-only
     #[clap(long)]
@@ -422,6 +423,12 @@ fn main() -> Result<()> {
     let rootless = !rustix::process::geteuid().is_root();
     let container_id = format!("composefs-{}", std::process::id());
 
+    let repo_path = match cli.repo.clone() {
+        Some(path) => path,
+        None if rootless => composefs::repository::user_path()?,
+        None => composefs::repository::system_path(),
+    };
+
     let image = if let Some(ref rootfs) = cli.rootfs {
         ensure!(
             rootfs.is_dir(),
@@ -433,7 +440,7 @@ fn main() -> Result<()> {
             erofs_hex: None,
         }
     } else {
-        let repo = ResolvedRepo::open(&cli.repo)?;
+        let repo = ResolvedRepo::open(&repo_path)?;
         repo.resolve_image(cli.image.as_deref().context("No image specified")?)?
     };
 
@@ -454,6 +461,7 @@ fn main() -> Result<()> {
         &container_id,
         &container_dir,
         &overlay_dir,
+        &repo_path,
         &image,
     );
 
