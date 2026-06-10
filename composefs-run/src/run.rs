@@ -94,6 +94,7 @@ pub fn run(
     }
 
     let mut container_ip = None;
+    let mut pasta_pid = None;
     let netns_path = if network != NetworkMode::Host {
         Some(setup_netns(&bundle_dir)?)
     } else {
@@ -109,7 +110,11 @@ pub fn run(
     } else if network == NetworkMode::Pasta
         && let Some(ref ns) = netns_path
     {
-        setup_pasta(ns, &cli.publish)?;
+        pasta_pid = Some(setup_pasta(
+            ns,
+            &bundle_dir.join("pasta.pid"),
+            &cli.publish,
+        )?);
     }
 
     // ── OCI spec + exec ────────────────────────────────────────────────
@@ -139,6 +144,7 @@ pub fn run(
         &network,
         netns_path.as_deref(),
         container_ip,
+        pasta_pid,
     )?;
 
     let config_json = serde_json::to_string_pretty(&spec)?;
@@ -178,6 +184,9 @@ pub fn cleanup() -> Result<()> {
         );
         let rootfs = dir.join("bundle/rootfs");
         let _ = rustix::mount::unmount(&rootfs, rustix::mount::UnmountFlags::DETACH);
+        if let Some(pid) = args.pasta_pid {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
         let netns = dir.join("bundle/netns");
         if netns.exists() {
             if let (Some(id), Some(ip)) = (&args.container_id, args.container_ip) {
@@ -421,7 +430,7 @@ fn setup_netns(bundle_dir: &Path) -> Result<PathBuf> {
     Ok(netns_path)
 }
 
-fn setup_pasta(netns_path: &Path, publish: &[PortSpec]) -> Result<()> {
+fn setup_pasta(netns_path: &Path, pid_file: &Path, publish: &[PortSpec]) -> Result<i32> {
     let mut pasta_cmd = Command::new("pasta");
     pasta_cmd
         .arg("--config-net")
@@ -429,6 +438,8 @@ fn setup_pasta(netns_path: &Path, publish: &[PortSpec]) -> Result<()> {
         .arg("169.254.1.1")
         .arg("--netns")
         .arg(netns_path)
+        .arg("--pid")
+        .arg(pid_file)
         .arg("--quiet");
 
     if publish.is_empty() {
@@ -449,7 +460,8 @@ fn setup_pasta(netns_path: &Path, publish: &[PortSpec]) -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    Ok(())
+    let pid_str = fs::read_to_string(pid_file).context("Reading pasta PID file")?;
+    pid_str.trim().parse::<i32>().context("Parsing pasta PID")
 }
 
 fn create_detached_tmpfs() -> Result<rustix::fd::OwnedFd> {
@@ -597,6 +609,7 @@ fn build_runtime_spec(
     network: &NetworkMode,
     netns_path: Option<&Path>,
     container_ip: Option<std::net::IpAddr>,
+    pasta_pid: Option<i32>,
 ) -> Result<Spec> {
     use std::collections::HashSet;
 
@@ -994,6 +1007,10 @@ fn build_runtime_spec(
         if let Some(ip) = container_ip {
             hook_args.push("--container-ip".into());
             hook_args.push(ip.to_string());
+        }
+        if let Some(pid) = pasta_pid {
+            hook_args.push("--pasta-pid".into());
+            hook_args.push(pid.to_string());
         }
         let hook = HookBuilder::default()
             .path(self_exe)

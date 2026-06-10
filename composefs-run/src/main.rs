@@ -30,6 +30,10 @@ pub(crate) struct CleanupArgs {
     /// Allocated container IP (for netavark teardown + IPAM release)
     #[clap(long)]
     container_ip: Option<std::net::IpAddr>,
+
+    /// PID of the pasta process to kill on cleanup
+    #[clap(long)]
+    pasta_pid: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
