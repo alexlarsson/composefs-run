@@ -22,6 +22,7 @@ tracking.
 - No detached mode, always assumes `-i`.
 - By default, writable overlays are transient, stored in /var/tmp.
   This can be overridden with `--overlay-dir`
+- By default runs catatonit in the container to forward signals
 
 ### Quick start
 
