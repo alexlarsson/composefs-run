@@ -135,6 +135,7 @@ pub fn run(
         &bundle_dir,
         tty,
         rootless,
+        &network,
         netns_path.as_deref(),
         container_ip,
     )?;
@@ -592,6 +593,7 @@ fn build_runtime_spec(
     bundle_dir: &Path,
     tty: bool,
     rootless: bool,
+    network: &NetworkMode,
     netns_path: Option<&Path>,
     container_ip: Option<std::net::IpAddr>,
 ) -> Result<Spec> {
@@ -960,7 +962,7 @@ fn build_runtime_spec(
     // /etc config bind mounts (hostname, hosts, resolv.conf)
     // When using pasta networking, default DNS to pasta's DNS forwarder.
     // For bridge networking, use the host's resolv.conf (default).
-    let dns: Vec<String> = if cli.dns.is_empty() && rootless && netns_path.is_some() {
+    let dns: Vec<String> = if cli.dns.is_empty() && *network == NetworkMode::Pasta {
         vec!["169.254.1.1".into()]
     } else {
         cli.dns.clone()

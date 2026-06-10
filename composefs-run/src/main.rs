@@ -434,7 +434,7 @@ fn main() -> Result<()> {
         }
     } else {
         let repo = ResolvedRepo::open(&cli.repo)?;
-        repo.resolve_image(cli.image.as_deref().unwrap())?
+        repo.resolve_image(cli.image.as_deref().context("No image specified")?)?
     };
 
     let container_dir = PathBuf::from(format!("/var/tmp/cfsrun-{container_id}"));
