@@ -313,13 +313,9 @@ pub(crate) struct Cli {
     #[clap(short = 't', long)]
     tty: bool,
 
-    /// Keep stdin open
-    #[clap(short = 'i', long)]
+    /// Accepted for compatibility, ignored
+    #[clap(short = 'i', long, hide = true)]
     interactive: bool,
-
-    /// Write the container init PID to this file
-    #[clap(long)]
-    pidfile: Option<PathBuf>,
 
     /// Add a host device to the container (HOST_PATH[:CONTAINER_PATH[:PERMISSIONS]])
     #[clap(long, value_parser = clap::value_parser!(DeviceSpec))]

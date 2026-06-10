@@ -150,23 +150,13 @@ pub fn run(
     let config_json = serde_json::to_string_pretty(&spec)?;
     fs::write(bundle_dir.join("config.json"), &config_json)?;
 
-    if cli.interactive || tty {
-        let err = Command::new("crun")
-            .arg("run")
-            .arg("--bundle")
-            .arg(bundle_dir)
-            .arg(container_id)
-            .exec();
-        Err(err).context("Failed to exec crun")
-    } else {
-        let image_name = cli.image.as_deref().unwrap_or("container");
-        run_detached(
-            &bundle_dir,
-            container_id,
-            image_name,
-            cli.pidfile.as_deref(),
-        )
-    }
+    let err = Command::new("crun")
+        .arg("run")
+        .arg("--bundle")
+        .arg(bundle_dir)
+        .arg(container_id)
+        .exec();
+    Err(err).context("Failed to exec crun")
 }
 
 /// OCI poststop hook: unmount and remove the container state directory.
@@ -198,55 +188,6 @@ pub fn cleanup() -> Result<()> {
         let _ = rustix::mount::unmount(&bundle, rustix::mount::UnmountFlags::DETACH);
         let _ = fs::remove_dir_all(dir);
     }
-    Ok(())
-}
-
-fn journal_stream_fd(identifier: &str) -> Result<std::os::fd::OwnedFd> {
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = UnixStream::connect("/run/systemd/journal/stdout")
-        .context("Connecting to journal socket")?;
-
-    write!(stream, "{identifier}\n\n6\n0\n0\n0\n0\n")?;
-    stream.flush()?;
-
-    Ok(std::os::fd::OwnedFd::from(stream))
-}
-
-fn run_detached(
-    bundle_dir: &Path,
-    container_id: &str,
-    image_name: &str,
-    pidfile: Option<&Path>,
-) -> Result<()> {
-    let journal_fd =
-        journal_stream_fd(&format!("cfsrun:{image_name}")).context("Creating journal stream fd")?;
-    let journal_fd2 = rustix::io::dup(&journal_fd)?;
-
-    let pidfile_path = match pidfile {
-        Some(pf) => pf.to_owned(),
-        None => bundle_dir.join("container.pid"),
-    };
-
-    let status = Command::new("crun")
-        .arg("run")
-        .arg("--detach")
-        .arg("--bundle")
-        .arg(bundle_dir)
-        .arg("--pid-file")
-        .arg(&pidfile_path)
-        .arg(container_id)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(std::fs::File::from(journal_fd)))
-        .stderr(std::process::Stdio::from(std::fs::File::from(journal_fd2)))
-        .status()
-        .context("Failed to run crun")?;
-    ensure!(status.success(), "crun run --detach failed: {status}");
-
-    let pid = fs::read_to_string(&pidfile_path).context("Reading PID file")?;
-    println!("{}", pid.trim());
-
     Ok(())
 }
 
