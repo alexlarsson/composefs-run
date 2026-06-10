@@ -35,10 +35,10 @@ cfsctl init --insecure /tmp/repo
 cfsctl --repo /tmp/repo oci pull docker://quay.io/centos/centos:stream10 cs10
 
 # Run a container (rootless — automatic)
-target/debug/cfsrun --repo /tmp/repo -it cs10 -- bash
+target/debug/cfsrun --repo /tmp/repo -t cs10 -- bash
 
 # Run as root (uses kernel erofs + bridge networking)
-sudo target/debug/cfsrun --repo /tmp/repo -it cs10 -- bash
+sudo target/debug/cfsrun --repo /tmp/repo -t cs10 -- bash
 ```
 
 ### Common options
@@ -48,7 +48,6 @@ cfsrun [OPTIONS] <IMAGE> [-- <CMD>...]
 
 Options:
   --repo <PATH>           Path to composefs repository
-  -i, --interactive       Keep stdin open
   -t, --tty               Allocate a pseudo-TTY
   -e, --env <KEY=VALUE>   Set environment variables
   -u, --user <UID[:GID]>  Override user
