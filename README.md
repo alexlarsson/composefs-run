@@ -1,5 +1,8 @@
 # composefs-run
 
+**NOTE**: This is currently a proof of concept, and not intended for
+production use
+
 A minimal container runner that runs OCI containers directly from
 [composefs-rs](https://github.com/containers/composefs-rs)
 repositories using [crun](https://github.com/containers/crun), without
@@ -14,12 +17,11 @@ tracking.
 - **Rootless mode**: FUSE-based composefs + unprivileged overlayfs
   (`userxattr`), user namespace with subuid/subgid mapping,
   [pasta](https://passt.top/) networking
-- SELinux labeling with MCS category separation
-- Seccomp profiles (default from containers-common, or from image labels)
-- Minimal host state: transient overlay in `/var/tmp`, tmpfs-backed bundle,
-  no global database
-- Default to transient overlays, persistent overlay via `--overlay-dir`
-- OCI poststop hooks for automatic cleanup
+- Minimal host state, containers are just child processes. There is no
+  equivalent of podman ps/rm etc.
+- No detached mode, always assumes `-i`.
+- By default, writable overlays are transient, stored in /var/tmp.
+  This can be overridden with `--overlay-dir`
 
 ### Quick start
 

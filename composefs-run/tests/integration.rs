@@ -48,7 +48,7 @@ fn repo() -> &'static Path {
 
 fn cfsrun() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfsrun"));
-    cmd.arg("--repo").arg(repo()).arg("-i");
+    cmd.arg("--repo").arg(repo());
     cmd
 }
 
