@@ -371,6 +371,25 @@ fn setup_netns(bundle_dir: &Path) -> Result<PathBuf> {
     Ok(netns_path)
 }
 
+const CATATONIT_PATHS: &[&str] = &[
+    "/usr/libexec/catatonit/catatonit",
+    "/usr/libexec/podman/catatonit",
+    "/usr/local/libexec/podman/catatonit",
+    "/usr/local/lib/podman/catatonit",
+    "/usr/libexec/catatonit",
+    "/usr/bin/catatonit",
+];
+
+fn find_catatonit() -> Result<PathBuf> {
+    for path in CATATONIT_PATHS {
+        let p = Path::new(path);
+        if p.exists() {
+            return Ok(p.to_owned());
+        }
+    }
+    anyhow::bail!("catatonit not found")
+}
+
 fn setup_pasta(netns_path: &Path, pid_file: &Path, publish: &[PortSpec]) -> Result<i32> {
     let mut pasta_cmd = Command::new("pasta");
     pasta_cmd
@@ -556,7 +575,7 @@ fn build_runtime_spec(
 
     // ── Resolve image + CLI into effective values ───────────────────────
 
-    let args = if cli.cmd.is_empty() {
+    let mut args = if cli.cmd.is_empty() {
         let mut args = oci_config.entrypoint().clone().unwrap_or_default();
         args.extend(oci_config.cmd().clone().unwrap_or_default());
         ensure!(
@@ -608,6 +627,20 @@ fn build_runtime_spec(
         SystemdMode::Always => true,
         SystemdMode::Off => false,
         SystemdMode::Auto => is_systemd_command(&args),
+    };
+
+    let use_init = !cli.no_init && !systemd_mode;
+    let init_path = if use_init {
+        match find_catatonit() {
+            Ok(path) => {
+                args.insert(0, "/dev/init".into());
+                args.insert(1, "--".into());
+                Some(path)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
     };
 
     let host_network = netns_path.is_none();
@@ -931,6 +964,22 @@ fn build_runtime_spec(
         &cli.dns_option,
     )?;
     mounts.extend(etc_mounts);
+
+    if let Some(ref path) = init_path {
+        mounts.push(
+            MountBuilder::default()
+                .typ("bind")
+                .source(path)
+                .destination("/dev/init")
+                .options(vec![
+                    "bind".into(),
+                    "ro".into(),
+                    "nosuid".into(),
+                    "nodev".into(),
+                ])
+                .build()?,
+        );
+    }
 
     spec.set_mounts(Some(mounts));
 

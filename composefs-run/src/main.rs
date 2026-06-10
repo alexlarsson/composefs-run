@@ -317,6 +317,10 @@ pub(crate) struct Cli {
     #[clap(short = 'i', long, hide = true)]
     interactive: bool,
 
+    /// Disable the default init process (catatonit) as PID 1
+    #[clap(long)]
+    no_init: bool,
+
     /// Add a host device to the container (HOST_PATH[:CONTAINER_PATH[:PERMISSIONS]])
     #[clap(long, value_parser = clap::value_parser!(DeviceSpec))]
     device: Vec<DeviceSpec>,
