@@ -19,46 +19,24 @@ use rustix::mount::{
 };
 
 use crate::{
-    CleanupArgs, Cli, HostEntry, NetworkMode, PortSpec, ResolvedImage, ResolvedRepo, SeccompPolicy,
-    SystemdMode, UserSpec, fuse, netavark, seccomp, selinux, userns,
+    CleanupArgs, Cli, HostEntry, NetworkMode, PortSpec, ResolvedImage, SeccompPolicy, SystemdMode,
+    UserSpec, fuse, netavark, seccomp, selinux, userns,
 };
 
 pub fn run(
+    rootless: bool,
     cli: &Cli,
     container_id: &str,
     container_dir: &Path,
     overlay_dir: &Path,
-    repo: &ResolvedRepo,
     image: &ResolvedImage,
 ) -> Result<()> {
-    let bundle_tmpfs = create_detached_tmpfs().context("Creating detached tmpfs for bundle")?;
-    rustix::fs::mkdirat(&bundle_tmpfs, "rootfs", Mode::from_raw_mode(0o755))?;
-
-    let mut mount_options = MountOptions::default();
-    if !cli.read_only {
-        let upper = overlay_dir.join("upper");
-        let work = overlay_dir.join("work");
-        fs::create_dir(&upper).with_context(|| format!("Creating {}", upper.display()))?;
-        fs::create_dir(&work).with_context(|| format!("Creating {}", work.display()))?;
-
-        let upper_fd = rustix::fs::open(
-            &upper,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let work_fd = rustix::fs::open(
-            &work,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        mount_options.set_overlay(upper_fd, work_fd);
-        mount_options.set_read_write(true);
+    if rootless {
+        userns::setup().context("Setting up user namespace")?;
+    } else {
+        unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }
+            .context("unshare(CLONE_NEWNS) — are you running as root?")?;
     }
-
-    let mount_fd = repo.mount_with_options(&image.erofs_hex, &mount_options)?;
-
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }
-        .context("unshare(CLONE_NEWNS) — are you running as root?")?;
 
     rustix::mount::mount_change(
         "/",
@@ -66,19 +44,54 @@ pub fn run(
     )
     .context("Making / recursively private")?;
 
+    let bundle_tmpfs = create_detached_tmpfs().context("Creating detached tmpfs for bundle")?;
+    rustix::fs::mkdirat(&bundle_tmpfs, "rootfs", Mode::from_raw_mode(0o755))?;
+
     let bundle_dir = container_dir.join("bundle");
     fs::create_dir(&bundle_dir)?;
+
     composefs::mount::mount_at(bundle_tmpfs, CWD, &bundle_dir).context("Attaching bundle tmpfs")?;
-
     let rootfs_dir = bundle_dir.join("rootfs");
-    composefs::mount::mount_at(mount_fd, CWD, &rootfs_dir)
-        .context("Attaching composefs mount at rootfs")?;
 
-    let network = cli.network.clone().unwrap_or(NetworkMode::Bridge);
-    ensure!(
-        network != NetworkMode::Pasta,
-        "--network pasta is only supported in rootless mode"
-    );
+    // ── Rootfs ──────────────────────────────────────────────────────
+
+    if let Some(ref rootfs) = cli.rootfs {
+        // --rootfs: skip composefs, use the directory directly
+        mount_rootfs_from_path(rootfs, &rootfs_dir, overlay_dir, cli.read_only, rootless)?;
+    } else if rootless {
+        mount_rootfs_with_fuse(
+            &cli.repo,
+            image,
+            &rootfs_dir,
+            container_dir,
+            overlay_dir,
+            cli.read_only,
+        )?;
+    } else {
+        mount_rootfs_with_erofs(&cli.repo, image, &rootfs_dir, overlay_dir, cli.read_only)?;
+    }
+
+    // ── Networking ──────────────────────────────────────────────────────
+
+    let default_network = if rootless {
+        NetworkMode::Pasta
+    } else {
+        NetworkMode::Bridge
+    };
+    let network = cli.network.clone().unwrap_or(default_network);
+
+    if !rootless {
+        ensure!(
+            network != NetworkMode::Pasta,
+            "--network pasta is only supported in rootless mode"
+        );
+    } else {
+        ensure!(
+            network != NetworkMode::Bridge,
+            "--network bridge is only supported in rootful mode"
+        );
+    }
+
     let mut container_ip = None;
     let netns_path = if network != NetworkMode::Host {
         Some(setup_netns(&bundle_dir)?)
@@ -92,135 +105,20 @@ pub fn run(
         container_ip = Some(
             netavark::setup(ns, container_id, &cli.publish).context("Setting up bridge network")?,
         );
+    } else if network == NetworkMode::Pasta
+        && let Some(ref ns) = netns_path
+    {
+        setup_pasta(ns, &cli.publish)?;
     }
 
-    run_container(
-        cli,
-        image,
-        container_id,
-        container_dir,
-        &bundle_dir,
-        false,
-        netns_path.as_deref(),
-        container_ip,
-    )
-}
+    // ── OCI spec + exec ────────────────────────────────────────────────
 
-pub fn run_rootless(
-    cli: &Cli,
-    container_id: &str,
-    container_dir: &Path,
-    overlay_dir: &Path,
-    image: &ResolvedImage,
-    repo_path: &Path,
-) -> Result<()> {
-    userns::setup().context("Setting up user namespace")?;
-
-    rustix::mount::mount_change(
-        "/",
-        MountPropagationFlags::REC | MountPropagationFlags::PRIVATE,
-    )
-    .context("Making / recursively private")?;
-
-    let network = cli.network.clone().unwrap_or(NetworkMode::Pasta);
-    ensure!(
-        network != NetworkMode::Bridge,
-        "--network bridge is only supported in rootful mode"
-    );
-
-    let dev_fuse = composefs_fuse::open_fuse().context("Opening /dev/fuse")?;
-    let fuse_fd_num = dev_fuse.as_raw_fd();
-
-    let fuse_mount_fd = fuse::mount_rootless(&dev_fuse).context("Creating FUSE mount")?;
-
-    fuse::spawn_server(repo_path, &image.erofs_hex, fuse_fd_num)?;
-
-    let bundle_tmpfs = create_detached_tmpfs().context("Creating detached tmpfs for bundle")?;
-    rustix::fs::mkdirat(&bundle_tmpfs, "rootfs", Mode::from_raw_mode(0o755))?;
-
-    let bundle_dir = container_dir.join("bundle");
-    fs::create_dir(&bundle_dir)?;
-    composefs::mount::mount_at(bundle_tmpfs, CWD, &bundle_dir).context("Attaching bundle tmpfs")?;
-
-    let rootfs_dir = bundle_dir.join("rootfs");
-
-    let netns_path = if network != NetworkMode::Host {
-        let path = setup_netns(&bundle_dir)?;
-        setup_pasta(&path, &cli.publish)?;
-        Some(path)
-    } else {
-        None
-    };
-
-    if cli.read_only {
-        composefs::mount::mount_at(fuse_mount_fd, CWD, &rootfs_dir)
-            .context("Attaching FUSE mount at rootfs")?;
-    } else {
-        let fuse_lower = container_dir.join("fuse-lower");
-        fs::create_dir(&fuse_lower)?;
-        composefs::mount::mount_at(fuse_mount_fd, CWD, &fuse_lower)
-            .context("Attaching FUSE mount")?;
-
-        let upper = overlay_dir.join("upper");
-        let work = overlay_dir.join("work");
-        fs::create_dir(&upper).with_context(|| format!("Creating {}", upper.display()))?;
-        fs::create_dir(&work).with_context(|| format!("Creating {}", work.display()))?;
-
-        let overlay = composefs::mount::FsHandle::open("overlay").context("fsopen(overlay)")?;
-        rustix::mount::fsconfig_set_string(
-            overlay.as_fd(),
-            "lowerdir",
-            fuse_lower.display().to_string(),
-        )?;
-        rustix::mount::fsconfig_set_string(
-            overlay.as_fd(),
-            "upperdir",
-            upper.display().to_string(),
-        )?;
-        rustix::mount::fsconfig_set_string(overlay.as_fd(), "workdir", work.display().to_string())?;
-        rustix::mount::fsconfig_set_flag(overlay.as_fd(), "userxattr")?;
-        rustix::mount::fsconfig_create(overlay.as_fd())?;
-        let overlay_fd = rustix::mount::fsmount(
-            overlay.as_fd(),
-            FsMountFlags::FSMOUNT_CLOEXEC,
-            MountAttrFlags::empty(),
-        )?;
-        composefs::mount::mount_at(overlay_fd, CWD, &rootfs_dir)
-            .context("Attaching overlay mount")?;
-
-        rustix::mount::unmount(&fuse_lower, rustix::mount::UnmountFlags::DETACH)
-            .context("Unmounting temporary FUSE lower")?;
-        fs::remove_dir(&fuse_lower).ok();
-    }
-
-    run_container(
-        cli,
-        image,
-        container_id,
-        container_dir,
-        &bundle_dir,
-        true,
-        netns_path.as_deref(),
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_container(
-    cli: &Cli,
-    image: &ResolvedImage,
-    container_id: &str,
-    container_dir: &Path,
-    bundle_dir: &Path,
-    rootless: bool,
-    netns_path: Option<&Path>,
-    container_ip: Option<std::net::IpAddr>,
-) -> Result<()> {
+    let default_config = oci_spec::image::Config::default();
     let oci_config = image
         .oci_config
         .config()
         .as_ref()
-        .context("Image has no config section")?;
+        .unwrap_or(&default_config);
 
     let tty = if cli.tty && !std::io::stdin().is_terminal() {
         eprintln!("warning: -t specified but stdin is not a terminal, ignoring");
@@ -234,10 +132,10 @@ fn run_container(
         oci_config,
         container_id,
         container_dir,
-        bundle_dir,
+        &bundle_dir,
         tty,
         rootless,
-        netns_path,
+        netns_path.as_deref(),
         container_ip,
     )?;
 
@@ -253,7 +151,13 @@ fn run_container(
             .exec();
         Err(err).context("Failed to exec crun")
     } else {
-        run_detached(bundle_dir, container_id, &cli.image, cli.pidfile.as_deref())
+        let image_name = cli.image.as_deref().unwrap_or("container");
+        run_detached(
+            &bundle_dir,
+            container_id,
+            image_name,
+            cli.pidfile.as_deref(),
+        )
     }
 }
 
@@ -335,6 +239,150 @@ fn run_detached(
     Ok(())
 }
 
+/// Mount a composefs image via FUSE (rootless).
+fn mount_rootfs_with_fuse(
+    repo_path: &Path,
+    image: &ResolvedImage,
+    rootfs_dir: &Path,
+    container_dir: &Path,
+    overlay_dir: &Path,
+    read_only: bool,
+) -> Result<()> {
+    let dev_fuse = composefs_fuse::open_fuse().context("Opening /dev/fuse")?;
+    let fuse_fd_num = dev_fuse.as_raw_fd();
+
+    let fuse_mount_fd = fuse::mount_rootless(&dev_fuse).context("Creating FUSE mount")?;
+
+    let erofs_hex = image.erofs_hex.as_deref().context("No composefs image")?;
+    fuse::spawn_server(repo_path, erofs_hex, fuse_fd_num)?;
+
+    if read_only {
+        composefs::mount::mount_at(fuse_mount_fd, CWD, rootfs_dir)
+            .context("Attaching FUSE mount at rootfs")?;
+    } else {
+        let fuse_lower = container_dir.join("fuse-lower");
+        fs::create_dir(&fuse_lower)?;
+        composefs::mount::mount_at(fuse_mount_fd, CWD, &fuse_lower)
+            .context("Attaching FUSE mount")?;
+
+        mount_overlay(
+            &fuse_lower.display().to_string(),
+            rootfs_dir,
+            overlay_dir,
+            true,
+        )?;
+
+        rustix::mount::unmount(&fuse_lower, rustix::mount::UnmountFlags::DETACH)
+            .context("Unmounting temporary FUSE lower")?;
+        fs::remove_dir(&fuse_lower).ok();
+    }
+    Ok(())
+}
+
+/// Mount a composefs image via kernel erofs (rootful).
+fn mount_rootfs_with_erofs(
+    repo_path: &Path,
+    image: &ResolvedImage,
+    rootfs_dir: &Path,
+    overlay_dir: &Path,
+    read_only: bool,
+) -> Result<()> {
+    let repo = crate::ResolvedRepo::open(repo_path)?;
+
+    let mut mount_options = MountOptions::default();
+    if !read_only {
+        let upper = overlay_dir.join("upper");
+        let work = overlay_dir.join("work");
+        fs::create_dir(&upper).with_context(|| format!("Creating {}", upper.display()))?;
+        fs::create_dir(&work).with_context(|| format!("Creating {}", work.display()))?;
+
+        let upper_fd = rustix::fs::open(
+            &upper,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let work_fd = rustix::fs::open(
+            &work,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        mount_options.set_overlay(upper_fd, work_fd);
+        mount_options.set_read_write(true);
+    }
+
+    let erofs_hex = image.erofs_hex.as_deref().context("No composefs image")?;
+    let mount_fd = repo.mount_with_options(erofs_hex, &mount_options)?;
+    composefs::mount::mount_at(mount_fd, CWD, rootfs_dir)
+        .context("Attaching composefs mount at rootfs")?;
+    Ok(())
+}
+
+/// Mount a host directory as the container rootfs.
+fn mount_rootfs_from_path(
+    rootfs: &Path,
+    target: &Path,
+    overlay_dir: &Path,
+    read_only: bool,
+    userxattr: bool,
+) -> Result<()> {
+    if read_only {
+        rustix::mount::mount_bind(rootfs, target)
+            .with_context(|| format!("bind mount {} at {}", rootfs.display(), target.display()))?;
+        // Remount to apply read-only (bind mount ignores flags on first call)
+        rustix::mount::mount_remount(target, rustix::mount::MountFlags::RDONLY, "")
+            .context("remount read-only")?;
+    } else {
+        mount_overlay(
+            &rootfs.display().to_string(),
+            target,
+            overlay_dir,
+            userxattr,
+        )?;
+    }
+    Ok(())
+}
+
+/// Mount an overlay filesystem with the given lower directory path.
+fn mount_overlay(lowerdir: &str, target: &Path, overlay_dir: &Path, userxattr: bool) -> Result<()> {
+    let upper = overlay_dir.join("upper");
+    let work = overlay_dir.join("work");
+    fs::create_dir(&upper)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+        .with_context(|| format!("Creating {}", upper.display()))?;
+    fs::create_dir(&work)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+        .with_context(|| format!("Creating {}", work.display()))?;
+
+    let overlay = composefs::mount::FsHandle::open("overlay").context("fsopen(overlay)")?;
+    rustix::mount::fsconfig_set_string(overlay.as_fd(), "lowerdir", lowerdir)?;
+    rustix::mount::fsconfig_set_string(overlay.as_fd(), "upperdir", upper.display().to_string())?;
+    rustix::mount::fsconfig_set_string(overlay.as_fd(), "workdir", work.display().to_string())?;
+    if userxattr {
+        rustix::mount::fsconfig_set_flag(overlay.as_fd(), "userxattr")?;
+    }
+    rustix::mount::fsconfig_create(overlay.as_fd())?;
+    let overlay_fd = rustix::mount::fsmount(
+        overlay.as_fd(),
+        FsMountFlags::FSMOUNT_CLOEXEC,
+        MountAttrFlags::empty(),
+    )?;
+    composefs::mount::mount_at(overlay_fd, CWD, target).context("Attaching overlay mount")?;
+    Ok(())
+}
+
+/// Create a new network namespace and bind mount it at `bundle_dir/netns`.
 fn setup_netns(bundle_dir: &Path) -> Result<PathBuf> {
     let netns_path = bundle_dir.join("netns");
     fs::write(&netns_path, "")?;
@@ -413,6 +461,7 @@ fn create_detached_tmpfs() -> Result<rustix::fd::OwnedFd> {
     .context("fsmount for tmpfs")?;
     Ok(mnt_fd)
 }
+
 fn generate_etc_config(
     bundle_dir: &Path,
     hostname: &str,
