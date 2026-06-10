@@ -392,8 +392,13 @@ pub(crate) struct Cli {
     #[clap(long, default_value = "true", value_parser = clap::value_parser!(SystemdMode))]
     systemd: SystemdMode,
 
+    /// Use a host directory as the container rootfs instead of a composefs image
+    #[clap(long, conflicts_with = "image")]
+    rootfs: Option<PathBuf>,
+
     /// OCI image ref name or @sha256:... digest
-    image: String,
+    #[clap(required_unless_present = "rootfs")]
+    image: Option<String>,
 
     /// Command to run (overrides image entrypoint+cmd)
     #[clap(last = true)]
@@ -414,13 +419,23 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let repo_path = &cli.repo;
-
     let rootless = !rustix::process::geteuid().is_root();
     let container_id = format!("composefs-{}", std::process::id());
 
-    let repo = ResolvedRepo::open(repo_path)?;
-    let image = repo.resolve_image(&cli.image)?;
+    let image = if let Some(ref rootfs) = cli.rootfs {
+        ensure!(
+            rootfs.is_dir(),
+            "--rootfs path '{}' is not a directory",
+            rootfs.display()
+        );
+        ResolvedImage {
+            oci_config: oci_spec::image::ImageConfiguration::default(),
+            erofs_hex: None,
+        }
+    } else {
+        let repo = ResolvedRepo::open(&cli.repo)?;
+        repo.resolve_image(cli.image.as_deref().context("No image specified")?)?
+    };
 
     let container_dir = PathBuf::from(format!("/var/tmp/cfsrun-{container_id}"));
     let overlay_dir = cli
@@ -433,25 +448,14 @@ fn main() -> Result<()> {
     rustix::fs::chmod(&container_dir, Mode::from_raw_mode(0o700))
         .with_context(|| format!("Setting permissions on {}", container_dir.display()))?;
 
-    let result = if rootless {
-        run::run_rootless(
-            &cli,
-            &container_id,
-            &container_dir,
-            &overlay_dir,
-            &image,
-            repo_path,
-        )
-    } else {
-        run::run(
-            &cli,
-            &container_id,
-            &container_dir,
-            &overlay_dir,
-            &repo,
-            &image,
-        )
-    };
+    let result = run::run(
+        rootless,
+        &cli,
+        &container_id,
+        &container_dir,
+        &overlay_dir,
+        &image,
+    );
 
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&container_dir);
@@ -460,7 +464,7 @@ fn main() -> Result<()> {
     result
 }
 
-/// Wraps the algorithm-specific repo so run()/run_rootless() don't need generics.
+/// Wraps the algorithm-specific repo so run() don't need generics.
 pub(crate) enum ResolvedRepo {
     Sha256(Repository<Sha256HashValue>),
     Sha512(Repository<Sha512HashValue>),
@@ -513,7 +517,7 @@ impl ResolvedRepo {
 
 pub(crate) struct ResolvedImage {
     pub(crate) oci_config: oci_spec::image::ImageConfiguration,
-    pub(crate) erofs_hex: String,
+    pub(crate) erofs_hex: Option<String>,
 }
 
 fn resolve_image_typed<ObjectID: FsVerityHashValue>(
@@ -535,7 +539,7 @@ fn resolve_image_typed<ObjectID: FsVerityHashValue>(
 
     Ok(ResolvedImage {
         oci_config: config.config,
-        erofs_hex: erofs_id.to_hex(),
+        erofs_hex: Some(erofs_id.to_hex()),
     })
 }
 
