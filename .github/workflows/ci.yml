@@ -64,7 +64,7 @@ jobs:
       image: quay.io/fedora/fedora:latest
       options: "--privileged --tmpfs /var/tmp:rw,exec"
     steps:
-      - run: dnf -y install cargo gcc-c++ fuse3-devel openssl-devel crun skopeo pasta netavark
+      - run: dnf -y install cargo gcc-c++ fuse3-devel openssl-devel crun skopeo pasta netavark catatonit
       - uses: actions/checkout@v4
       - name: Download binaries
         uses: actions/download-artifact@v4

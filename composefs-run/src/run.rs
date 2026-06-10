@@ -631,14 +631,10 @@ fn build_runtime_spec(
 
     let use_init = !cli.no_init && !systemd_mode;
     let init_path = if use_init {
-        match find_catatonit() {
-            Ok(path) => {
-                args.insert(0, "/dev/init".into());
-                args.insert(1, "--".into());
-                Some(path)
-            }
-            Err(_) => None,
-        }
+        let path = find_catatonit().context("catatonit is required (use --no-init to disable)")?;
+        args.insert(0, "/dev/init".into());
+        args.insert(1, "--".into());
+        Some(path)
     } else {
         None
     };
