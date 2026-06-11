@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -10,7 +10,6 @@ use clap::Parser;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::repository::{Repository, read_repo_algorithm};
 use rustix::fs::{CWD, Mode, OFlags};
-use rustix::mount::{FsMountFlags, MountAttrFlags};
 
 /// Arguments for the internal FUSE server mode.
 #[derive(Debug, Parser)]
@@ -65,33 +64,6 @@ pub fn spawn_server(repo_path: &Path, erofs_hex: &str, fuse_fd: i32) -> Result<(
         }
     }
     Ok(())
-}
-
-/// Like composefs_fuse::mount_fuse() but without `allow_other`, which
-/// requires /etc/fuse.conf `user_allow_other` or CAP_SYS_ADMIN in the
-/// init user namespace. We don't need it since only our own process tree
-/// accesses the mount.
-/// TODO: fix upstream composefs_fuse::mount_fuse() to make allow_other
-/// optional, then use that instead.
-pub fn mount_rootless(dev_fuse: impl AsFd) -> Result<rustix::fd::OwnedFd> {
-    let fusefs = composefs::mount::FsHandle::open("fuse")?;
-    rustix::mount::fsconfig_set_flag(fusefs.as_fd(), "ro")?;
-    rustix::mount::fsconfig_set_flag(fusefs.as_fd(), "default_permissions")?;
-    rustix::mount::fsconfig_set_string(fusefs.as_fd(), "source", "composefs-fuse")?;
-    rustix::mount::fsconfig_set_string(fusefs.as_fd(), "rootmode", "040555")?;
-    rustix::mount::fsconfig_set_string(fusefs.as_fd(), "user_id", "0")?;
-    rustix::mount::fsconfig_set_string(fusefs.as_fd(), "group_id", "0")?;
-    rustix::mount::fsconfig_set_string(
-        fusefs.as_fd(),
-        "fd",
-        format!("{}", dev_fuse.as_fd().as_raw_fd()),
-    )?;
-    rustix::mount::fsconfig_create(fusefs.as_fd())?;
-    Ok(rustix::mount::fsmount(
-        fusefs.as_fd(),
-        FsMountFlags::FSMOUNT_CLOEXEC,
-        MountAttrFlags::empty(),
-    )?)
 }
 
 /// Run the FUSE server (called via --internal-fuse-serve).

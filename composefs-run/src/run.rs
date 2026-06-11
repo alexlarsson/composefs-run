@@ -203,7 +203,9 @@ fn mount_rootfs_with_fuse(
     let dev_fuse = composefs_fuse::open_fuse().context("Opening /dev/fuse")?;
     let fuse_fd_num = dev_fuse.as_raw_fd();
 
-    let fuse_mount_fd = fuse::mount_rootless(&dev_fuse).context("Creating FUSE mount")?;
+    let fuse_mount_fd =
+        composefs_fuse::mount_fuse(&dev_fuse, &composefs_fuse::FuseMountOptions::default())
+            .context("Creating FUSE mount")?;
 
     let erofs_hex = image.erofs_hex.as_deref().context("No composefs image")?;
     fuse::spawn_server(repo_path, erofs_hex, fuse_fd_num)?;

@@ -339,7 +339,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "composefs"
 version = "0.4.0"
-source = "git+https://github.com/containers/composefs-rs?branch=main#4c3e68f8ed84b2e909452b1b41635cc37715699e"
+source = "git+https://github.com/containers/composefs-rs?branch=main#7f9f81fb4302cb3c4906474138fe15b89ae7f9aa"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -364,7 +364,7 @@ dependencies = [
 [[package]]
 name = "composefs-fuse"
 version = "0.4.0"
-source = "git+https://github.com/containers/composefs-rs?branch=main#4c3e68f8ed84b2e909452b1b41635cc37715699e"
+source = "git+https://github.com/containers/composefs-rs?branch=main#7f9f81fb4302cb3c4906474138fe15b89ae7f9aa"
 dependencies = [
  "anyhow",
  "composefs",
@@ -376,7 +376,7 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.4.0"
-source = "git+https://github.com/containers/composefs-rs?branch=main#4c3e68f8ed84b2e909452b1b41635cc37715699e"
+source = "git+https://github.com/containers/composefs-rs?branch=main#7f9f81fb4302cb3c4906474138fe15b89ae7f9aa"
 dependencies = [
  "rustix",
  "thiserror 2.0.18",
@@ -385,7 +385,7 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.4.0"
-source = "git+https://github.com/containers/composefs-rs?branch=main#4c3e68f8ed84b2e909452b1b41635cc37715699e"
+source = "git+https://github.com/containers/composefs-rs?branch=main#7f9f81fb4302cb3c4906474138fe15b89ae7f9aa"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -429,7 +429,7 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.4.0"
-source = "git+https://github.com/containers/composefs-rs?branch=main#4c3e68f8ed84b2e909452b1b41635cc37715699e"
+source = "git+https://github.com/containers/composefs-rs?branch=main#7f9f81fb4302cb3c4906474138fe15b89ae7f9aa"
 dependencies = [
  "anyhow",
  "base64",
